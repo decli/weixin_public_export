@@ -62,6 +62,9 @@ CSV 导出正文纯文本；JSON 导出正文纯文本和 HTML。
 
 ```js
 {
+  appmsg_id: "",
+  publish_id: "",
+  idx: "",
   publish_time: "",
   title: "",
   status: "",
@@ -75,6 +78,8 @@ CSV 导出正文纯文本；JSON 导出正文纯文本和 HTML。
   content_url: "",
   cover_url: "",
   article_text: "",
+  article_fetch_status: "",
+  article_fetch_error: "",
   article_content_html: "",
   source: "api,content",
   collected_at: ""
@@ -84,7 +89,11 @@ CSV 导出正文纯文本；JSON 导出正文纯文本和 HTML。
 去重规则：
 
 1. 优先使用 `content_url`。
-2. 如果没有链接，则使用 `title`。
+2. 如果没有链接，则使用 `appmsg_id + idx`。
+3. 如果仍没有 ID，则使用 `publish_id + idx + title`。
+4. 最后使用 `title`。
+
+已删除、无正文链接或正文抓取失败的文章仍保留在列表导出中，并通过 `article_fetch_status` 标记。
 
 ## 采集节奏
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WeChat MP recent articles local exporter
 // @namespace    local.codex.weixin
-// @version      0.3.2
+// @version      0.3.3
 // @description  Locally export WeChat MP article stats and content. Supports API collection, page collection, CSV/JSON export, and a draggable/collapsible panel.
 // @author       local
 // @match        https://mp.weixin.qq.com/cgi-bin/home*
@@ -42,6 +42,9 @@
   ];
 
   const EXPORT_COLUMNS = [
+    "appmsg_id",
+    "publish_id",
+    "idx",
     "publish_time",
     "title",
     "status",
@@ -56,6 +59,8 @@
     "article_author",
     "article_publish_time",
     "article_text_len",
+    "article_fetch_status",
+    "article_fetch_error",
     "article_text",
     "collected_at",
   ];
@@ -184,6 +189,11 @@
   function makeKey(row) {
     const url = String(row.content_url || "").trim();
     if (url) return `url:${url}`;
+    const appmsgId = String(row.appmsg_id || "").trim();
+    const idx = String(row.idx || "").trim();
+    if (appmsgId) return `appmsg:${appmsgId}:${idx}`;
+    const publishId = String(row.publish_id || "").trim();
+    if (publishId) return `publish:${publishId}:${idx}:${String(row.title || "").trim()}`;
     return `title:${String(row.title || "").trim()}`;
   }
 
@@ -202,9 +212,9 @@
   }
 
   function mergeRows(rows) {
-    const byKey = new Map(STATE.rows.filter((row) => row.title).map((row) => [makeKey(row), row]));
+    const byKey = new Map(STATE.rows.filter((row) => row.title || row.appmsg_id || row.publish_id).map((row) => [makeKey(row), row]));
     for (const row of rows) {
-      if (!row || !row.title) continue;
+      if (!row || (!row.title && !row.appmsg_id && !row.publish_id)) continue;
       const key = makeKey(row);
       const old = byKey.get(key) || {};
       const merged = { ...old };
@@ -495,7 +505,6 @@
       for (const msg of appmsgList) {
         if (!msg || typeof msg !== "object") continue;
         const isDeleted = asDeleted(msg.is_deleted);
-        if (isDeleted) continue;
         const lineInfo = msg.line_info || {};
         const timestamp = firstTimestamp(
           lineInfo.send_time,
@@ -509,8 +518,11 @@
         const oldLikeNum = safeInt(msg.old_like_num, 0);
         const likeNum = momentLikeNum > 0 ? momentLikeNum : oldLikeNum;
         const row = {
+          appmsg_id: firstNonEmpty(msg.appmsgid, msg.appmsg_id, msg.id, lineInfo.appmsgid, ""),
+          publish_id: firstNonEmpty(item.publish_id, item.id, publishInfo.publish_id, publishMeta.publish_id, ""),
+          idx: firstNonEmpty(msg.idx, msg.itemidx, msg.item_idx, lineInfo.idx, ""),
           publish_time: formatTimestamp(timestamp),
-          title: msg.title || "",
+          title: msg.title || (isDeleted ? "[已删除文章]" : ""),
           cover_url: msg.cover || "",
           content_url: msg.content_url || "",
           read_num: safeInt(msg.read_num),
@@ -520,6 +532,7 @@
           favorite_or_collect_num: pickInt(msg, ["favorite_num", "collect_num", "fav_num", "appmsg_fav_num"]),
           comment_num: pickInt(msg, ["comment_num", "comment_count", "comment_total_count", "appmsg_comment_count"]),
           is_deleted: isDeleted ? "yes" : "no",
+          article_fetch_status: isDeleted ? "skipped_deleted" : msg.content_url ? "" : "skipped_no_url",
           status: "已发表",
           source,
           collected_at: new Date().toISOString(),
@@ -528,7 +541,7 @@
       }
     }
 
-    return { rows: rows.filter((row) => row.title), totalCount: safeInt(publishPage.total_count, 0) };
+    return { rows: rows.filter((row) => row.title || row.appmsg_id || row.publish_id), totalCount: safeInt(publishPage.total_count, 0) };
   }
 
   function pickInt(obj, names) {
@@ -624,7 +637,8 @@
         if (totalCount && begin >= totalCount) break;
         await politeDelay("Next API page", API_DELAY_RANGE_MS);
       }
-      toast(`API done. ${STATE.rows.length} rows.`);
+      const remote = STATE.totalCount ? ` / remote ${STATE.totalCount}` : "";
+      toast(`API done. ${STATE.rows.length}${remote} rows.`);
       return STATE.rows;
     } catch (error) {
       alert(`API collection failed: ${error.message || error}`);
@@ -654,8 +668,9 @@
 
   async function collectArticleContents() {
     if (STATE.running) return;
-    const rowsWithUrls = STATE.rows.filter((row) => row.content_url);
-    if (!rowsWithUrls.length) {
+    const contentCandidates = STATE.rows.filter((row) => row.content_url && row.is_deleted !== "yes");
+    const skipped = STATE.rows.length - contentCandidates.length;
+    if (!contentCandidates.length) {
       alert("No article URLs collected yet. Run API all CSV or Pages CSV first.");
       return;
     }
@@ -664,20 +679,22 @@
     let done = 0;
     let failed = 0;
     try {
-      for (const row of rowsWithUrls) {
+      for (const row of contentCandidates) {
         if (!STATE.running) break;
         done += 1;
         if (row.article_text || row.article_content_html) {
-          updatePanel(`Content ${done}/${rowsWithUrls.length}: cached`);
+          updatePanel(`Content ${done}/${contentCandidates.length}: cached`);
           continue;
         }
-        updatePanel(`Content ${done}/${rowsWithUrls.length}: fetching...`);
+        updatePanel(`Content ${done}/${contentCandidates.length}: fetching...`);
         try {
-          const content = await withRetries(`Content ${done}/${rowsWithUrls.length}`, () => fetchArticleContent(row.content_url));
+          const content = await withRetries(`Content ${done}/${contentCandidates.length}`, () => fetchArticleContent(row.content_url));
           mergeRows([
             {
               ...row,
               ...content,
+              article_fetch_status: "ok",
+              article_fetch_error: "",
               source: mergeSource(row.source, "content"),
               collected_at: new Date().toISOString(),
             },
@@ -687,14 +704,16 @@
           mergeRows([
             {
               ...row,
+              article_fetch_status: "failed",
               article_fetch_error: String(error?.message || error || "unknown error").slice(0, 300),
               collected_at: new Date().toISOString(),
             },
           ]);
         }
-        if (done < rowsWithUrls.length) await politeDelay("Next article content", CONTENT_DELAY_RANGE_MS);
+        if (done < contentCandidates.length) await politeDelay("Next article content", CONTENT_DELAY_RANGE_MS);
       }
-      toast(`Content done. ${rowsWithUrls.length - failed}/${rowsWithUrls.length} fetched.`);
+      const kept = STATE.rows.length;
+      toast(`Content done. ${contentCandidates.length - failed}/${contentCandidates.length} fetched, ${failed} failed, ${skipped} skipped, ${kept} rows kept.`);
     } finally {
       STATE.running = false;
       updatePanel();

@@ -59,6 +59,9 @@ Pages CSV
 CSV 可能包含以下字段：
 
 - `publish_time`：后台列表返回的发布时间。
+- `appmsg_id`：接口返回的文章 ID，便于去重。
+- `publish_id`：接口返回的发布记录 ID。
+- `idx`：同一次群发中的文章序号。
 - `title`：文章标题。
 - `status`：发布状态。
 - `is_original`：是否原创。
@@ -74,6 +77,8 @@ CSV 可能包含以下字段：
 - `article_author`：正文页解析出的作者或账号名。
 - `article_publish_time`：正文页显示的发布时间。
 - `article_text_len`：正文纯文本长度。
+- `article_fetch_status`：正文采集状态，可能是 `ok`、`failed`、`skipped_deleted`、`skipped_no_url`。
+- `article_fetch_error`：正文采集失败原因。
 - `article_text`：正文纯文本。
 - `source`：数据来源，可能是 `api`、`dom`、`content` 的组合。
 - `collected_at`：本地采集时间。
@@ -113,6 +118,8 @@ const ERROR_BACKOFF_RANGE_MS = [45000, 90000];
 ### 正文为空
 
 可能是文章链接不可访问、文章已删除、公开页结构变化，或请求被临时限制。可以稍后重试，或只导出列表数据。
+
+列表数据不会因为正文失败而丢失。已删除或无正文链接的文章仍会保留在 CSV 中，并通过 `article_fetch_status` 标记。
 
 ### CSV 在 Excel 中乱码
 
