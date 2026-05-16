@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "WeChat MP Local Exporter",
+  "version": "0.3.1",
+  "description": "Local exporter for WeChat MP published article stats and article content.",
+  "host_permissions": [
+    "https://mp.weixin.qq.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://mp.weixin.qq.com/cgi-bin/home*",
+        "https://mp.weixin.qq.com/cgi-bin/appmsg*",
+        "https://mp.weixin.qq.com/cgi-bin/appmsgpublish*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "wechat_mp_recent_export.user.js"
+      ],
+      "matches": [
+        "https://mp.weixin.qq.com/*"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+.DS_Store
+a.txt
+outputs/
+downloads/
+wechat-mp-recent-*.csv
+wechat-mp-recent-*.json
+*.log
+*.tmp
