@@ -45,8 +45,8 @@
 3. 粘贴 `wechat_mp_recent_export.user.js` 的内容并保存。
 4. 打开微信公众号后台「近期发表」页面。
 5. 右下角出现 `MP Exporter` 面板。
-6. 优先点击 `API all CSV` 导出完整文章列表。
-7. 如果需要正文，点击 `API+Content`。
+6. 优先点击 `List CSV` 导出完整文章列表。
+7. 如果需要正文，点击 `List+Text`。正文采集耗时较长，可随时点击 `Pause CSV` 导出当前进度。
 
 ## 快速开始：Chrome 扩展
 
@@ -60,15 +60,12 @@
 
 ## 面板按钮
 
-- `API all CSV`：通过后台列表接口按分页导出全部文章数据。
-- `API+Content`：先导出全部文章数据，再逐篇抓取正文文本，最后导出 CSV。
-- `Pages CSV`：模拟点击分页按钮并扫描页面 DOM，适合作为 API 模式失败时的备用方案。
-- `Content CSV`：基于已采集到的文章链接抓正文并导出 CSV。
-- `Content JSON`：抓正文并导出 JSON，JSON 中会包含正文 HTML。
-- `Scan`：扫描当前可见页面。
-- `Scroll`：滚动扫描当前页面。
-- `CSV` / `JSON`：导出当前已采集数据。
-- `Stop`：停止当前采集任务。
+- `List CSV`：通过后台列表接口按分页导出全部文章数据，不抓正文。
+- `List+Text`：先导出文章列表，再逐篇抓取正文文本，最后导出 CSV。
+- `Pause CSV`：暂停当前长任务，并立即导出当前已采集结果。
+- `Export CSV` / `Export JSON`：不抓新数据，只导出当前本地缓存。
+- `Page Fallback`：模拟点击分页按钮并扫描页面 DOM，适合作为 API 模式失败时的备用方案。
+- `Scan Page`：扫描当前可见页面，适合调试或少量手动补采。
 - `Clear`：清空浏览器本地已采集缓存。
 
 ## 默认采集节奏

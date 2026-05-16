@@ -13,8 +13,10 @@ This folder is a local Chrome extension wrapper for `wechat_mp_recent_export.use
 
 1. Open the WeChat MP backend recent-published page.
 2. Use the `MP Exporter` panel.
-3. Prefer `API+Content` when you want stats plus article text in one CSV.
-4. Use `Content JSON` if you want full parsed HTML as well; CSV exports plain text only.
+3. Prefer `List CSV` when you only need article stats.
+4. Use `List+Text` when you want stats plus article text in one CSV.
+5. Use `Pause CSV` during long text collection to stop and export the current partial result.
+6. Use `Export JSON` if you want full parsed HTML as well; CSV exports plain text only.
 
 ## Privacy Model
 

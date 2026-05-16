@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WeChat MP recent articles local exporter
 // @namespace    local.codex.weixin
-// @version      0.3.3
+// @version      0.4.0
 // @description  Locally export WeChat MP article stats and content. Supports API collection, page collection, CSV/JSON export, and a draggable/collapsible panel.
 // @author       local
 // @match        https://mp.weixin.qq.com/cgi-bin/home*
@@ -72,6 +72,8 @@
     collapsed: localStorage.getItem(PANEL_COLLAPSED_KEY) === "1",
     toastTimer: null,
     lastDownload: null,
+    stopRequested: false,
+    activeController: null,
   };
 
   installNetworkHooks();
@@ -92,6 +94,15 @@
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
+  async function interruptibleSleep(ms) {
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      if (STATE.stopRequested || !STATE.running) return false;
+      await sleep(Math.min(500, end - Date.now()));
+    }
+    return true;
+  }
+
   function randomDelay(range) {
     const [min, max] = range;
     return Math.floor(min + Math.random() * Math.max(0, max - min));
@@ -100,18 +111,21 @@
   async function politeDelay(label, range) {
     const ms = randomDelay(range);
     updatePanel(`${label}: waiting ${Math.ceil(ms / 1000)}s...`);
-    await sleep(ms);
+    return interruptibleSleep(ms);
   }
 
   async function withRetries(label, task) {
     let lastError = null;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
+      if (STATE.stopRequested || !STATE.running) throw new Error("Task paused");
       try {
         return await task();
       } catch (error) {
+        if (STATE.stopRequested || error?.name === "AbortError") throw new Error("Task paused");
         lastError = error;
         if (attempt >= MAX_RETRIES) break;
-        await politeDelay(`${label} failed, retry ${attempt + 1}/${MAX_RETRIES}`, ERROR_BACKOFF_RANGE_MS);
+        const shouldContinue = await politeDelay(`${label} failed, retry ${attempt + 1}/${MAX_RETRIES}`, ERROR_BACKOFF_RANGE_MS);
+        if (!shouldContinue) throw new Error("Task paused");
       }
     }
     throw lastError;
@@ -588,11 +602,10 @@
     url.searchParams.set("f", "json");
     url.searchParams.set("ajax", "1");
 
-    const response = await fetch(url.toString(), {
+    const text = await fetchText(url.toString(), {
       credentials: "include",
       headers: { Accept: "application/json, text/javascript, */*; q=0.01" },
     });
-    const text = await response.text();
     let data;
     try {
       data = JSON.parse(text);
@@ -619,6 +632,7 @@
       saveRows();
     }
 
+    STATE.stopRequested = false;
     STATE.running = true;
     updatePanel("API collecting...");
     try {
@@ -635,33 +649,39 @@
         begin += PAGE_SIZE;
         page += 1;
         if (totalCount && begin >= totalCount) break;
-        await politeDelay("Next API page", API_DELAY_RANGE_MS);
+        const shouldContinue = await politeDelay("Next API page", API_DELAY_RANGE_MS);
+        if (!shouldContinue) break;
       }
       const remote = STATE.totalCount ? ` / remote ${STATE.totalCount}` : "";
       toast(`API done. ${STATE.rows.length}${remote} rows.`);
       return STATE.rows;
     } catch (error) {
+      if (STATE.stopRequested || String(error?.message || error).includes("Task paused")) {
+        toast(`Paused. ${STATE.rows.length} rows kept.`);
+        return STATE.rows;
+      }
       alert(`API collection failed: ${error.message || error}`);
-      toast("API failed. Try Pages CSV.");
+      toast("API failed. Try Page Fallback.");
       return [];
     } finally {
       STATE.running = false;
+      STATE.activeController = null;
       updatePanel();
     }
   }
 
   async function apiAllCollectAndExport() {
     const rows = await collectAllApiRows("ask");
-    if (rows && STATE.rows.length) {
+    if (rows && STATE.rows.length && !STATE.stopRequested) {
       exportCsv("API collection complete");
     }
   }
 
   async function apiAllContentCsv() {
     const rows = await collectAllApiRows("ask");
-    if (!rows || !STATE.rows.length) return;
+    if (!rows || !STATE.rows.length || STATE.stopRequested) return;
     await collectArticleContents();
-    if (STATE.rows.length) {
+    if (STATE.rows.length && !STATE.stopRequested) {
       exportCsv("API and content collection complete");
     }
   }
@@ -671,10 +691,11 @@
     const contentCandidates = STATE.rows.filter((row) => row.content_url && row.is_deleted !== "yes");
     const skipped = STATE.rows.length - contentCandidates.length;
     if (!contentCandidates.length) {
-      alert("No article URLs collected yet. Run API all CSV or Pages CSV first.");
+      alert("No article URLs collected yet. Run List CSV or Page Fallback first.");
       return;
     }
 
+    STATE.stopRequested = false;
     STATE.running = true;
     let done = 0;
     let failed = 0;
@@ -700,6 +721,9 @@
             },
           ]);
         } catch (error) {
+          if (STATE.stopRequested || String(error?.message || error).includes("Task paused")) {
+            break;
+          }
           failed += 1;
           mergeRows([
             {
@@ -710,34 +734,55 @@
             },
           ]);
         }
-        if (done < contentCandidates.length) await politeDelay("Next article content", CONTENT_DELAY_RANGE_MS);
+        if (done < contentCandidates.length) {
+          const shouldContinue = await politeDelay("Next article content", CONTENT_DELAY_RANGE_MS);
+          if (!shouldContinue) break;
+        }
       }
       const kept = STATE.rows.length;
-      toast(`Content done. ${contentCandidates.length - failed}/${contentCandidates.length} fetched, ${failed} failed, ${skipped} skipped, ${kept} rows kept.`);
+      const completed = STATE.rows.filter((row) => row.article_text || row.article_content_html || row.article_fetch_status === "ok").length;
+      if (STATE.stopRequested) {
+        toast(`Paused. ${completed}/${contentCandidates.length} content rows ready, ${failed} failed, ${skipped} skipped, ${kept} rows kept.`);
+      } else {
+        toast(`Content done. ${contentCandidates.length - failed}/${contentCandidates.length} fetched, ${failed} failed, ${skipped} skipped, ${kept} rows kept.`);
+      }
     } finally {
       STATE.running = false;
+      STATE.activeController = null;
       updatePanel();
     }
   }
 
   async function collectContentAndExportCsv() {
     await collectArticleContents();
-    if (STATE.rows.length) exportCsv("Content collection complete");
+    if (STATE.rows.length && !STATE.stopRequested) exportCsv("Content collection complete");
   }
 
   async function collectContentAndExportJson() {
     await collectArticleContents();
-    if (STATE.rows.length) exportJson("Content collection complete");
+    if (STATE.rows.length && !STATE.stopRequested) exportJson("Content collection complete");
   }
 
   async function fetchArticleContent(url) {
-    const response = await fetch(url, {
+    const html = await fetchText(url, {
       credentials: "include",
       headers: { Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" },
     });
-    const html = await response.text();
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return parseArticleHtml(html, url);
+  }
+
+  async function fetchText(url, options = {}) {
+    if (STATE.stopRequested) throw new Error("Task paused");
+    const controller = new AbortController();
+    STATE.activeController = controller;
+    try {
+      const response = await fetch(url, { ...options, signal: controller.signal });
+      const text = await response.text();
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return text;
+    } finally {
+      if (STATE.activeController === controller) STATE.activeController = null;
+    }
   }
 
   function parseArticleHtml(html, url) {
@@ -839,6 +884,7 @@
 
   async function autoScrollCollect() {
     if (STATE.running) return;
+    STATE.stopRequested = false;
     STATE.running = true;
     updatePanel("Auto scrolling...");
     let stableRounds = 0;
@@ -852,7 +898,8 @@
       } else {
         scrollTarget.scrollBy({ top: Math.floor(scrollTarget.clientHeight * 0.85), behavior: "smooth" });
       }
-      await politeDelay("Next scroll", SCROLL_DELAY_RANGE_MS);
+      const shouldContinue = await politeDelay("Next scroll", SCROLL_DELAY_RANGE_MS);
+      if (!shouldContinue) break;
       stableRounds = STATE.rows.length === lastCount ? stableRounds + 1 : 0;
       lastCount = STATE.rows.length;
       if (stableRounds >= 5) break;
@@ -971,6 +1018,7 @@
       saveRows();
     }
 
+    STATE.stopRequested = false;
     STATE.running = true;
     for (let page = 1; page <= maxPages && STATE.running; page += 1) {
       updatePanel(`Page ${page}/${maxPages}: scanning...`);
@@ -978,12 +1026,13 @@
       if (page === maxPages) break;
       const moved = await clickNextPage();
       if (!moved) break;
-      await politeDelay("Next page", PAGE_CLICK_DELAY_RANGE_MS);
+      const shouldContinue = await politeDelay("Next page", PAGE_CLICK_DELAY_RANGE_MS);
+      if (!shouldContinue) break;
     }
     STATE.running = false;
     updatePanel();
     toast(`Pages done. ${STATE.rows.length} rows.`);
-    if (STATE.rows.length) exportCsv("Page collection complete");
+    if (STATE.rows.length && !STATE.stopRequested) exportCsv("Page collection complete");
   }
 
   function toCsv(rows) {
@@ -1067,7 +1116,7 @@
 
   function exportCsv(reason = "CSV export ready") {
     if (!STATE.rows.length) {
-      alert("No rows collected yet. Run API all CSV or Scan first.");
+      alert("No rows collected yet. Run List CSV or Scan Page first.");
       return false;
     }
     const csv = "\ufeff" + toCsv(STATE.rows);
@@ -1076,7 +1125,7 @@
 
   function exportJson(reason = "JSON export ready") {
     if (!STATE.rows.length) {
-      alert("No rows collected yet. Run API all CSV or Scan first.");
+      alert("No rows collected yet. Run List CSV or Scan Page first.");
       return false;
     }
     return downloadText(`wechat-mp-recent-${dateStamp()}.json`, JSON.stringify(STATE.rows, null, 2), "application/json", reason);
@@ -1154,6 +1203,28 @@
     return `${(n / 1024 / 1024).toFixed(1)} MB`;
   }
 
+  function pauseAndExportCsv() {
+    if (!STATE.running) {
+      exportCsv("Current cached CSV export");
+      return;
+    }
+    STATE.stopRequested = true;
+    STATE.running = false;
+    if (STATE.activeController) {
+      try {
+        STATE.activeController.abort();
+      } catch (_) {
+        // Ignore abort errors; the running task will notice the pause flag.
+      }
+    }
+    updatePanel("Pause requested. Preparing current CSV...");
+    if (STATE.rows.length) {
+      exportCsv("Paused; partial CSV export ready");
+    } else {
+      alert("Pause requested, but no rows have been collected yet.");
+    }
+  }
+
   function copyJson() {
     const text = JSON.stringify(STATE.rows, null, 2);
     if (typeof GM_setClipboard === "function") {
@@ -1183,11 +1254,12 @@
     STATE.toastTimer = setTimeout(() => updatePanel(), 2000);
   }
 
-  function makeButton(label, onClick) {
+  function makeButton(label, onClick, title = "") {
     const button = document.createElement("button");
     button.textContent = label;
     button.type = "button";
-    button.addEventListener("click", onClick);
+    if (title) button.title = title;
+    button.addEventListener("click", () => onClick());
     Object.assign(button.style, {
       border: "1px solid #d0d7de",
       borderRadius: "4px",
@@ -1281,21 +1353,14 @@
     const buttons = document.createElement("div");
     Object.assign(buttons.style, { display: "flex", flexWrap: "wrap", gap: "6px" });
     buttons.append(
-      makeButton("API all CSV", apiAllCollectAndExport),
-      makeButton("API+Content", apiAllContentCsv),
-      makeButton("Pages CSV", autoPagesCollectAndExport),
-      makeButton("Content CSV", collectContentAndExportCsv),
-      makeButton("Content JSON", collectContentAndExportJson),
-      makeButton("Scan", scanVisible),
-      makeButton("Scroll", autoScrollCollect),
-      makeButton("CSV", exportCsv),
-      makeButton("JSON", exportJson),
-      makeButton("Copy", copyJson),
-      makeButton("Stop", () => {
-        STATE.running = false;
-        updatePanel();
-      }),
-      makeButton("Clear", clearRows),
+      makeButton("List CSV", apiAllCollectAndExport, "Fetch the full published-article list from the backend API and export CSV. Does not fetch article body text."),
+      makeButton("List+Text", apiAllContentCsv, "Fetch the full list, then slowly fetch article body text. This can take a long time; use Pause CSV any time."),
+      makeButton("Pause CSV", pauseAndExportCsv, "Pause the current long task, abort the active request when possible, and immediately export whatever has been collected so far."),
+      makeButton("Export CSV", exportCsv, "Download the current cached rows as CSV without fetching anything new."),
+      makeButton("Export JSON", exportJson, "Download the current cached rows as JSON. Includes article HTML when text/content has been fetched."),
+      makeButton("Page Fallback", autoPagesCollectAndExport, "Fallback mode: click visible pagination and scan the page DOM. Use only when List CSV fails."),
+      makeButton("Scan Page", scanVisible, "Scan only the currently visible page. Useful for quick debugging or manual fallback."),
+      makeButton("Clear", clearRows, "Clear the local browser cache used by this exporter. This does not delete downloaded files."),
     );
     body.appendChild(buttons);
 
