@@ -68,11 +68,8 @@ CSV 可能包含以下字段：
 
 - `publish_time`：后台列表返回的发布时间。
 - `appmsg_id`：接口返回的文章 ID，便于去重。
-- `publish_id`：接口返回的发布记录 ID。
-- `idx`：同一次群发中的文章序号。
 - `title`：文章标题。
 - `status`：发布状态。
-- `is_original`：是否原创。
 - `read_num`：阅读数。
 - `like_num`：点赞数。
 - `share_num`：分享数。
@@ -90,6 +87,8 @@ CSV 可能包含以下字段：
 - `article_text`：正文纯文本。
 - `source`：数据来源，可能是 `api`、`dom`、`content` 的组合。
 - `collected_at`：本地采集时间。
+
+说明：`publish_id`、`idx`、`is_original`、`raw_numbers` 不再作为默认导出列。它们要么在 API 全量模式下不稳定或为空，要么主要用于内部去重/调试，对分析表格价值不高。
 
 ## 面板操作
 

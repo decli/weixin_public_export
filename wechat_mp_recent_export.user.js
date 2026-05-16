@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WeChat MP recent articles local exporter
 // @namespace    local.codex.weixin
-// @version      0.4.1
+// @version      0.4.2
 // @description  Locally export WeChat MP article stats and content. Supports API collection, page collection, CSV/JSON export, and a draggable/collapsible panel.
 // @author       local
 // @match        https://mp.weixin.qq.com/cgi-bin/home*
@@ -43,16 +43,12 @@
 
   const EXPORT_COLUMNS = [
     "appmsg_id",
-    "publish_id",
-    "idx",
     "publish_time",
     "title",
     "status",
-    "is_original",
     ...METRIC_COLUMNS,
     "is_deleted",
     "source",
-    "raw_numbers",
     "content_url",
     "cover_url",
     "article_title",
