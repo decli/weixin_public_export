@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WeChat MP recent articles local exporter
 // @namespace    local.codex.weixin
-// @version      0.4.0
+// @version      0.4.1
 // @description  Locally export WeChat MP article stats and content. Supports API collection, page collection, CSV/JSON export, and a draggable/collapsible panel.
 // @author       local
 // @match        https://mp.weixin.qq.com/cgi-bin/home*
@@ -74,6 +74,7 @@
     lastDownload: null,
     stopRequested: false,
     activeController: null,
+    currentTask: "Idle",
   };
 
   installNetworkHooks();
@@ -92,6 +93,15 @@
 
   function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function setCurrentTask(task) {
+    STATE.currentTask = task || "Idle";
+    updateTaskLine();
+  }
+
+  function finishCurrentTask() {
+    setCurrentTask(STATE.stopRequested ? "Paused" : "Idle");
   }
 
   async function interruptibleSleep(ms) {
@@ -414,10 +424,12 @@
   }
 
   function scanVisible() {
+    setCurrentTask("Scan Page");
     if (!document.body) return [];
     const rows = collectCandidateRoots().map(extractDomRow).filter(Boolean);
     mergeRows(rows);
     toast(`Scanned ${rows.length}; total ${STATE.rows.length}.`);
+    if (!STATE.running) setCurrentTask("Idle");
     return rows;
   }
 
@@ -624,7 +636,7 @@
     return firstNonEmpty(win?.wx?.cgiData?.token, win?.wx?.data?.t, "");
   }
 
-  async function collectAllApiRows(clearMode = "ask") {
+  async function collectAllApiRows(clearMode = "ask", taskName = "List CSV") {
     if (STATE.running) return;
     const clearFirst = clearMode === "always" || (clearMode === "ask" && STATE.rows.length ? confirm("Clear old collected rows first?") : false);
     if (clearFirst) {
@@ -634,6 +646,7 @@
 
     STATE.stopRequested = false;
     STATE.running = true;
+    setCurrentTask(taskName);
     updatePanel("API collecting...");
     try {
       let begin = 0;
@@ -666,27 +679,31 @@
     } finally {
       STATE.running = false;
       STATE.activeController = null;
+      finishCurrentTask();
       updatePanel();
     }
   }
 
   async function apiAllCollectAndExport() {
-    const rows = await collectAllApiRows("ask");
+    setCurrentTask("List CSV");
+    const rows = await collectAllApiRows("ask", "List CSV");
     if (rows && STATE.rows.length && !STATE.stopRequested) {
       exportCsv("API collection complete");
     }
   }
 
   async function apiAllContentCsv() {
-    const rows = await collectAllApiRows("ask");
+    setCurrentTask("List+Text");
+    const rows = await collectAllApiRows("ask", "List+Text");
     if (!rows || !STATE.rows.length || STATE.stopRequested) return;
-    await collectArticleContents();
+    setCurrentTask("List+Text");
+    await collectArticleContents("List+Text");
     if (STATE.rows.length && !STATE.stopRequested) {
       exportCsv("API and content collection complete");
     }
   }
 
-  async function collectArticleContents() {
+  async function collectArticleContents(taskName = "Article Text") {
     if (STATE.running) return;
     const contentCandidates = STATE.rows.filter((row) => row.content_url && row.is_deleted !== "yes");
     const skipped = STATE.rows.length - contentCandidates.length;
@@ -697,6 +714,7 @@
 
     STATE.stopRequested = false;
     STATE.running = true;
+    setCurrentTask(taskName);
     let done = 0;
     let failed = 0;
     try {
@@ -749,17 +767,20 @@
     } finally {
       STATE.running = false;
       STATE.activeController = null;
+      finishCurrentTask();
       updatePanel();
     }
   }
 
   async function collectContentAndExportCsv() {
-    await collectArticleContents();
+    setCurrentTask("Article Text");
+    await collectArticleContents("Article Text");
     if (STATE.rows.length && !STATE.stopRequested) exportCsv("Content collection complete");
   }
 
   async function collectContentAndExportJson() {
-    await collectArticleContents();
+    setCurrentTask("Article Text JSON");
+    await collectArticleContents("Article Text JSON");
     if (STATE.rows.length && !STATE.stopRequested) exportJson("Content collection complete");
   }
 
@@ -886,6 +907,7 @@
     if (STATE.running) return;
     STATE.stopRequested = false;
     STATE.running = true;
+    setCurrentTask("Scroll Scan");
     updatePanel("Auto scrolling...");
     let stableRounds = 0;
     let lastCount = STATE.rows.length;
@@ -906,6 +928,7 @@
     }
 
     STATE.running = false;
+    finishCurrentTask();
     updatePanel();
     toast(`Scroll done. Total ${STATE.rows.length}.`);
   }
@@ -1020,6 +1043,7 @@
 
     STATE.stopRequested = false;
     STATE.running = true;
+    setCurrentTask("Page Fallback");
     for (let page = 1; page <= maxPages && STATE.running; page += 1) {
       updatePanel(`Page ${page}/${maxPages}: scanning...`);
       scanVisible();
@@ -1030,6 +1054,7 @@
       if (!shouldContinue) break;
     }
     STATE.running = false;
+    finishCurrentTask();
     updatePanel();
     toast(`Pages done. ${STATE.rows.length} rows.`);
     if (STATE.rows.length && !STATE.stopRequested) exportCsv("Page collection complete");
@@ -1115,25 +1140,39 @@
   }
 
   function exportCsv(reason = "CSV export ready") {
+    setCurrentTask("Export CSV");
     if (!STATE.rows.length) {
       alert("No rows collected yet. Run List CSV or Scan Page first.");
+      finishCurrentTask();
       return false;
     }
-    const csv = "\ufeff" + toCsv(STATE.rows);
-    return downloadText(`wechat-mp-recent-${dateStamp()}.csv`, csv, "text/csv", reason);
+    try {
+      const csv = "\ufeff" + toCsv(STATE.rows);
+      return downloadText(`wechat-mp-recent-${dateStamp()}.csv`, csv, "text/csv", reason);
+    } finally {
+      finishCurrentTask();
+    }
   }
 
   function exportJson(reason = "JSON export ready") {
+    setCurrentTask("Export JSON");
     if (!STATE.rows.length) {
       alert("No rows collected yet. Run List CSV or Scan Page first.");
+      finishCurrentTask();
       return false;
     }
-    return downloadText(`wechat-mp-recent-${dateStamp()}.json`, JSON.stringify(STATE.rows, null, 2), "application/json", reason);
+    try {
+      return downloadText(`wechat-mp-recent-${dateStamp()}.json`, JSON.stringify(STATE.rows, null, 2), "application/json", reason);
+    } finally {
+      finishCurrentTask();
+    }
   }
 
   function triggerLastDownload() {
+    setCurrentTask("Retry Save");
     if (!STATE.lastDownload?.url) {
       alert("No prepared export file yet.");
+      finishCurrentTask();
       return;
     }
     const a = document.createElement("a");
@@ -1145,6 +1184,7 @@
     a.remove();
     STATE.lastDownload.status = "manual clicked";
     updateDownloadLink();
+    finishCurrentTask();
   }
 
   function updateDownloadLink() {
@@ -1204,6 +1244,7 @@
   }
 
   function pauseAndExportCsv() {
+    setCurrentTask("Pause CSV");
     if (!STATE.running) {
       exportCsv("Current cached CSV export");
       return;
@@ -1226,6 +1267,7 @@
   }
 
   function copyJson() {
+    setCurrentTask("Copy JSON");
     const text = JSON.stringify(STATE.rows, null, 2);
     if (typeof GM_setClipboard === "function") {
       GM_setClipboard(text);
@@ -1233,13 +1275,19 @@
       navigator.clipboard?.writeText(text);
     }
     toast("Copied JSON.");
+    finishCurrentTask();
   }
 
   function clearRows() {
-    if (!confirm("Clear collected rows stored in this browser?")) return;
+    setCurrentTask("Clear Cache");
+    if (!confirm("Clear collected rows stored in this browser?")) {
+      finishCurrentTask();
+      return;
+    }
     STATE.rows = [];
     saveRows();
     updatePanel();
+    finishCurrentTask();
   }
 
   function dateStamp() {
@@ -1332,6 +1380,19 @@
     body.id = "codex-wechat-exporter-body";
     Object.assign(body.style, { padding: "8px" });
 
+    const task = document.createElement("div");
+    task.id = "codex-wechat-exporter-task";
+    Object.assign(task.style, {
+      marginBottom: "6px",
+      padding: "5px 7px",
+      border: "1px solid #d8dee4",
+      borderRadius: "5px",
+      background: "#f6f8fa",
+      color: "#24292f",
+      fontWeight: "600",
+    });
+    body.appendChild(task);
+
     const status = document.createElement("div");
     status.id = "codex-wechat-exporter-status";
     status.style.marginBottom = "8px";
@@ -1374,6 +1435,7 @@
     applySavedPanelPosition(panel);
     installDrag(panel, header);
     setCollapsed(STATE.collapsed);
+    updateTaskLine();
     updatePanel();
   }
 
@@ -1449,5 +1511,11 @@
     if (!status) return;
     const total = STATE.totalCount ? ` / remote ${STATE.totalCount}` : "";
     status.textContent = message || `${STATE.rows.length}${total} rows${STATE.running ? " - running" : ""}`;
+  }
+
+  function updateTaskLine() {
+    const task = document.getElementById("codex-wechat-exporter-task");
+    if (!task) return;
+    task.textContent = `Current: ${STATE.currentTask || "Idle"}`;
   }
 })();
