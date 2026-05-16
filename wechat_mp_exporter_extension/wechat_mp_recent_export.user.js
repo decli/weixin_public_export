@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WeChat MP recent articles local exporter
 // @namespace    local.codex.weixin
-// @version      0.3.1
+// @version      0.3.2
 // @description  Locally export WeChat MP article stats and content. Supports API collection, page collection, CSV/JSON export, and a draggable/collapsible panel.
 // @author       local
 // @match        https://mp.weixin.qq.com/cgi-bin/home*
@@ -66,6 +66,7 @@
     totalCount: 0,
     collapsed: localStorage.getItem(PANEL_COLLAPSED_KEY) === "1",
     toastTimer: null,
+    lastDownload: null,
   };
 
   installNetworkHooks();
@@ -636,14 +637,19 @@
   }
 
   async function apiAllCollectAndExport() {
-    await collectAllApiRows("ask");
-    exportCsv();
+    const rows = await collectAllApiRows("ask");
+    if (rows && STATE.rows.length) {
+      exportCsv("API collection complete");
+    }
   }
 
   async function apiAllContentCsv() {
-    await collectAllApiRows("ask");
+    const rows = await collectAllApiRows("ask");
+    if (!rows || !STATE.rows.length) return;
     await collectArticleContents();
-    exportCsv();
+    if (STATE.rows.length) {
+      exportCsv("API and content collection complete");
+    }
   }
 
   async function collectArticleContents() {
@@ -697,12 +703,12 @@
 
   async function collectContentAndExportCsv() {
     await collectArticleContents();
-    exportCsv();
+    if (STATE.rows.length) exportCsv("Content collection complete");
   }
 
   async function collectContentAndExportJson() {
     await collectArticleContents();
-    exportJson();
+    if (STATE.rows.length) exportJson("Content collection complete");
   }
 
   async function fetchArticleContent(url) {
@@ -958,7 +964,7 @@
     STATE.running = false;
     updatePanel();
     toast(`Pages done. ${STATE.rows.length} rows.`);
-    exportCsv();
+    if (STATE.rows.length) exportCsv("Page collection complete");
   }
 
   function toCsv(rows) {
@@ -969,29 +975,164 @@
     return [EXPORT_COLUMNS.join(","), ...rows.map((row) => EXPORT_COLUMNS.map((col) => escapeCell(row[col])).join(","))].join("\n");
   }
 
-  function downloadText(filename, text, mime) {
+  function downloadText(filename, text, mime, reason = "Export ready") {
     const blob = new Blob([text], { type: `${mime};charset=utf-8` });
     const url = URL.createObjectURL(blob);
+    if (STATE.lastDownload?.url) {
+      URL.revokeObjectURL(STATE.lastDownload.url);
+    }
+    STATE.lastDownload = {
+      filename,
+      mime,
+      size: blob.size,
+      text,
+      url,
+      status: "ready",
+      createdAt: new Date().toLocaleString(),
+      reason,
+    };
+    updateDownloadLink();
+    updatePanel(`${reason}. ${filename} is ready.`);
+
+    const fallbackToAnchor = () => {
+      try {
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        a.rel = "noopener";
+        a.style.display = "none";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        STATE.lastDownload.status = "auto-clicked";
+        updateDownloadLink();
+        toast(`Download prepared: ${filename}. If no save dialog appeared, click the download link in the panel.`);
+        return true;
+      } catch (error) {
+        STATE.lastDownload.status = `manual needed: ${error?.message || error}`;
+        updateDownloadLink();
+        alert(`Download is ready, but auto-download was blocked. Click the download link in the MP Exporter panel.`);
+        return false;
+      }
+    };
+
     if (typeof GM_download === "function") {
-      GM_download({ url, name: filename, saveAs: true, onload: () => URL.revokeObjectURL(url) });
+      try {
+        GM_download({
+          url,
+          name: filename,
+          saveAs: true,
+          onload: () => {
+            if (STATE.lastDownload?.url === url) {
+              STATE.lastDownload.status = "saved";
+              updateDownloadLink();
+              updatePanel(`Saved or download started: ${filename}`);
+            }
+          },
+          onerror: () => {
+            fallbackToAnchor();
+          },
+          ontimeout: () => {
+            fallbackToAnchor();
+          },
+        });
+        STATE.lastDownload.status = "save dialog requested";
+        updateDownloadLink();
+        return true;
+      } catch (_) {
+        return fallbackToAnchor();
+      }
+    }
+    return fallbackToAnchor();
+  }
+
+  function exportCsv(reason = "CSV export ready") {
+    if (!STATE.rows.length) {
+      alert("No rows collected yet. Run API all CSV or Scan first.");
+      return false;
+    }
+    const csv = "\ufeff" + toCsv(STATE.rows);
+    return downloadText(`wechat-mp-recent-${dateStamp()}.csv`, csv, "text/csv", reason);
+  }
+
+  function exportJson(reason = "JSON export ready") {
+    if (!STATE.rows.length) {
+      alert("No rows collected yet. Run API all CSV or Scan first.");
+      return false;
+    }
+    return downloadText(`wechat-mp-recent-${dateStamp()}.json`, JSON.stringify(STATE.rows, null, 2), "application/json", reason);
+  }
+
+  function triggerLastDownload() {
+    if (!STATE.lastDownload?.url) {
+      alert("No prepared export file yet.");
       return;
     }
     const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
+    a.href = STATE.lastDownload.url;
+    a.download = STATE.lastDownload.filename;
+    a.rel = "noopener";
     document.body.appendChild(a);
     a.click();
     a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    STATE.lastDownload.status = "manual clicked";
+    updateDownloadLink();
   }
 
-  function exportCsv() {
-    const csv = "\ufeff" + toCsv(STATE.rows);
-    downloadText(`wechat-mp-recent-${dateStamp()}.csv`, csv, "text/csv");
+  function updateDownloadLink() {
+    const box = document.getElementById("codex-wechat-exporter-download");
+    if (!box) return;
+    box.textContent = "";
+    if (!STATE.lastDownload?.url) {
+      box.style.display = "none";
+      return;
+    }
+
+    box.style.display = "block";
+
+    const meta = document.createElement("div");
+    meta.textContent = `${STATE.lastDownload.filename} (${formatBytes(STATE.lastDownload.size)})`;
+    meta.style.fontWeight = "600";
+    meta.style.marginBottom = "4px";
+    box.appendChild(meta);
+
+    const status = document.createElement("div");
+    status.textContent = `${STATE.lastDownload.reason}; status: ${STATE.lastDownload.status}`;
+    status.style.color = "#57606a";
+    status.style.marginBottom = "6px";
+    box.appendChild(status);
+
+    const row = document.createElement("div");
+    Object.assign(row.style, { display: "flex", gap: "6px", flexWrap: "wrap" });
+
+    const link = document.createElement("a");
+    link.href = STATE.lastDownload.url;
+    link.download = STATE.lastDownload.filename;
+    link.textContent = "Download file";
+    Object.assign(link.style, {
+      border: "1px solid #2da44e",
+      borderRadius: "4px",
+      padding: "5px 7px",
+      background: "#2da44e",
+      color: "#fff",
+      textDecoration: "none",
+      cursor: "pointer",
+    });
+    link.addEventListener("click", () => {
+      STATE.lastDownload.status = "download link clicked";
+      updateDownloadLink();
+    });
+    row.appendChild(link);
+
+    row.appendChild(makeButton("Retry save", triggerLastDownload));
+    box.appendChild(row);
   }
 
-  function exportJson() {
-    downloadText(`wechat-mp-recent-${dateStamp()}.json`, JSON.stringify(STATE.rows, null, 2), "application/json");
+  function formatBytes(bytes) {
+    const n = Number(bytes) || 0;
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    return `${(n / 1024 / 1024).toFixed(1)} MB`;
   }
 
   function copyJson() {
@@ -1104,6 +1245,19 @@
     status.id = "codex-wechat-exporter-status";
     status.style.marginBottom = "8px";
     body.appendChild(status);
+
+    const download = document.createElement("div");
+    download.id = "codex-wechat-exporter-download";
+    Object.assign(download.style, {
+      display: "none",
+      marginBottom: "8px",
+      padding: "8px",
+      border: "1px solid #d8dee4",
+      borderRadius: "6px",
+      background: "#f6f8fa",
+      userSelect: "text",
+    });
+    body.appendChild(download);
 
     const buttons = document.createElement("div");
     Object.assign(buttons.style, { display: "flex", flexWrap: "wrap", gap: "6px" });
